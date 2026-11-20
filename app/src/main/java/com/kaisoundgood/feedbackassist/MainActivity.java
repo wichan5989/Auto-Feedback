@@ -114,6 +114,45 @@ public class MainActivity extends Activity {
         return tagEnd+4;
     }
 
+    private static void countChangedSlots(byte[] prev,byte[] now,int[] counts) {
+        int n=Math.min(counts.length,Math.min(prev.length,now.length)/4-1);
+        for(int i=0;i<n;i++) {
+            int offset=4+i*4;
+            boolean changed=false;
+            for(int j=0;j<4;j++) if(prev[offset+j]!=now[offset+j]) { changed=true; break; }
+            if(changed) counts[i]++;
+        }
+    }
+
+    private static String topSlots(int[] counts) {
+        int[] copy=java.util.Arrays.copyOf(counts,counts.length);
+        StringBuilder out=new StringBuilder();
+        for(int rank=0;rank<8;rank++) {
+            int best=-1;
+            for(int i=0;i<copy.length;i++) if(copy[i]>0 && (best<0 || copy[i]>copy[best])) best=i;
+            if(best<0) break;
+            if(out.length()>0) out.append(",");
+            out.append(best).append(":").append(copy[best]);
+            copy[best]=-1;
+        }
+        return out.length()==0?"none":out.toString();
+    }
+
+    private static String slotDiagnostics(byte[] data) {
+        if(data==null || data.length<8) return "no-data";
+        int count=(data[0]&255)|((data[1]&255)<<8)|((data[2]&255)<<16)|((data[3]&255)<<24);
+        int available=(data.length-4)/4;
+        StringBuilder sb=new StringBuilder("declared=").append(count).append(",slots=").append(available);
+        for(int i=0;i<Math.min(8,available);i++) {
+            int j=4+i*4;
+            int bits=(data[j]&255)|((data[j+1]&255)<<8)|((data[j+2]&255)<<16)|((data[j+3]&255)<<24);
+            float value=Float.intBitsToFloat(bits);
+            sb.append(",s").append(i).append("=").append(
+                Float.isFinite(value)?String.format(java.util.Locale.US,"%.5g",value):"nonfinite");
+        }
+        return sb.toString();
+    }
+
     private void update(String text) { lastReport = text; runOnUiThread(() -> status.setText(text)); }
 
     private void runProbe() {
@@ -159,6 +198,9 @@ public class MainActivity extends Activity {
                 String shape15="none", shape16="none", rtaSource="none";
                 MeterAnalyzer analyze15 = new MeterAnalyzer();
                 MeterAnalyzer analyze16 = new MeterAnalyzer();
+                byte[] last15=null, last16=null;
+                int[] changed15=new int[50],changed16=new int[48];
+                byte[] prev15=null,prev16=null;
                 sock.setSoTimeout(350);
                 while (android.os.SystemClock.elapsedRealtime()<end) {
                     try {
@@ -173,12 +215,22 @@ public class MainActivity extends Activity {
                             if(path.equals("/meters/15")) {
                                 if(shape15.equals("none")) shape15=packetShape(packet.getData(),packet.getLength());
                                 int offset=blobOffset(packet.getData(),packet.getLength());
-                                if(offset>=0) analyze15.accept(java.util.Arrays.copyOfRange(packet.getData(),offset,packet.getLength()),packet.getLength()-offset);
+                                if(offset>=0) {
+                                    byte[] now=java.util.Arrays.copyOfRange(packet.getData(),offset,packet.getLength());
+                                    analyze15.accept(now,now.length);
+                                    if(prev15!=null) countChangedSlots(prev15,now,changed15);
+                                    prev15=now; last15=now;
+                                }
                             }
                             if(path.equals("/meters/16")) {
                                 if(shape16.equals("none")) shape16=packetShape(packet.getData(),packet.getLength());
                                 int offset=blobOffset(packet.getData(),packet.getLength());
-                                if(offset>=0) analyze16.accept(java.util.Arrays.copyOfRange(packet.getData(),offset,packet.getLength()),packet.getLength()-offset);
+                                if(offset>=0) {
+                                    byte[] now=java.util.Arrays.copyOfRange(packet.getData(),offset,packet.getLength());
+                                    analyze16.accept(now,now.length);
+                                    if(prev16!=null) countChangedSlots(prev16,now,changed16);
+                                    prev16=now; last16=now;
+                                }
                             }
                         } else {
                             otherPackets++;
@@ -194,7 +246,10 @@ public class MainActivity extends Activity {
                     " | meterBytes="+meterBytes+" | otherPackets="+otherPackets+
                     " | maxPacketBytes="+maxPacketBytes+" | shape15={"+shape15+"} | shape16={"+shape16+
                     "} | source={"+rtaSource+"} | analysis15={"+analyze15.report()+
-                    "} | analysis16={"+analyze16.report()+"} | paths="+packetDetails+
+                    "} | analysis16={"+analyze16.report()+
+                    "} | slots15={"+slotDiagnostics(last15)+"} | topChanged15={"+topSlots(changed15)+
+                    "} | slots16={"+slotDiagnostics(last16)+"} | topChanged16={"+topSlots(changed16)+
+                    "} | paths="+packetDetails+
                     " | RTA=UNVERIFIED | EQ_WRITE=DISABLED");
             } catch (Exception e) {
                 update("OSC test failed: "+e.getClass().getSimpleName()+" · "+e.getMessage()+
