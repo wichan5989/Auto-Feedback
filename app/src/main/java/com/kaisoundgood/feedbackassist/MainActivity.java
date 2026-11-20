@@ -72,6 +72,37 @@ public class MainActivity extends Activity {
         return Arrays.copyOf(raw,(raw.length+3)&~3);
     }
 
+    private static int paddedEnd(byte[] data, int start, int len) {
+        int p=start;
+        while(p<len && data[p]!=0) p++;
+        if(p>=len) return -1;
+        return (p+4)&~3;
+    }
+    private static String printable(byte[] data,int start,int end) {
+        if(start<0 || end>data.length || start>=end) return "?";
+        return new String(data,start,end-start,StandardCharsets.US_ASCII);
+    }
+    private static String packetShape(byte[] data,int len) {
+        int a=paddedEnd(data,0,len);
+        if(a<0 || a>=len) return "invalid-address";
+        int b=paddedEnd(data,a,len);
+        if(b<0 || b>len) return "invalid-tags";
+        String tags=printable(data,a,Math.min(b,len)).split("\\u0000",2)[0];
+        StringBuilder out=new StringBuilder("tags=").append(tags).append(",payload=").append(len-b).append("B");
+        if(tags.contains("b") && b+4<=len) {
+            int n=((data[b]&255)<<24)|((data[b+1]&255)<<16)|((data[b+2]&255)<<8)|(data[b+3]&255);
+            out.append(",blob=").append(n).append("B");
+            int sample=Math.min(12,Math.max(0,Math.min(n,len-b-4)));
+            out.append(",hex=");
+            for(int i=0;i<sample;i++) out.append(String.format(java.util.Locale.US,"%02X",data[b+4+i]&255));
+        } else {
+            int sample=Math.min(12,Math.max(0,len-b));
+            out.append(",hex=");
+            for(int i=0;i<sample;i++) out.append(String.format(java.util.Locale.US,"%02X",data[b+i]&255));
+        }
+        return out.toString();
+    }
+
     private void update(String text) { lastReport = text; runOnUiThread(() -> status.setText(text)); }
 
     private void runProbe() {
@@ -114,6 +145,7 @@ public class MainActivity extends Activity {
                 StringBuilder packetDetails = new StringBuilder();
                 int meterBytes=0;
                 int maxPacketBytes=0;
+                String shape15="none", shape16="none", rtaSource="none";
                 sock.setSoTimeout(350);
                 while (android.os.SystemClock.elapsedRealtime()<end) {
                     try {
@@ -123,8 +155,14 @@ public class MainActivity extends Activity {
                         String msg = new String(packet.getData(),0,Math.min(packet.getLength(),64),StandardCharsets.UTF_8);
                         String path = msg.split("\u0000",2)[0];
                         maxPacketBytes = Math.max(maxPacketBytes,packet.getLength());
-                        if (path.startsWith("/meters/")) { meterPackets++; meterBytes += packet.getLength(); }
-                        else otherPackets++;
+                        if (path.startsWith("/meters/")) {
+                            meterPackets++; meterBytes += packet.getLength();
+                            if(path.equals("/meters/15") && shape15.equals("none")) shape15=packetShape(packet.getData(),packet.getLength());
+                            if(path.equals("/meters/16") && shape16.equals("none")) shape16=packetShape(packet.getData(),packet.getLength());
+                        } else {
+                            otherPackets++;
+                            if(path.equals("/-prefs/rta/source")) rtaSource=packetShape(packet.getData(),packet.getLength());
+                        }
                         if (packetDetails.length()<450) {
                             packetDetails.append(path.replaceAll("[^\\x20-\\x7E]","?"))
                                 .append("(").append(packet.getLength()).append("B) ");
@@ -133,7 +171,8 @@ public class MainActivity extends Activity {
                 }
                 update("OSC OK | mixer=192.168.0.100:10023 | meterPackets="+meterPackets+
                     " | meterBytes="+meterBytes+" | otherPackets="+otherPackets+
-                    " | maxPacketBytes="+maxPacketBytes+" | paths="+packetDetails+
+                    " | maxPacketBytes="+maxPacketBytes+" | shape15={"+shape15+"} | shape16={"+shape16+
+                    "} | source={"+rtaSource+"} | paths="+packetDetails+
                     " | RTA=UNVERIFIED | EQ_WRITE=DISABLED");
             } catch (Exception e) {
                 update("OSC test failed: "+e.getClass().getSimpleName()+" · "+e.getMessage()+
