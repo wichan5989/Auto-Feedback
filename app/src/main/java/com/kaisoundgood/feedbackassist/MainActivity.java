@@ -1,6 +1,9 @@
 package com.kaisoundgood.feedbackassist;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.os.Bundle;
 import android.graphics.Color;
 import android.view.Gravity;
@@ -19,6 +22,7 @@ import java.util.Arrays;
 public class MainActivity extends Activity {
     private TextView status;
     private volatile boolean probing = false;
+    private volatile String lastReport = "No OSC test yet";
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -37,6 +41,14 @@ public class MainActivity extends Activity {
         probe.setText("TEST OSC + RTA");
         probe.setOnClickListener(v -> runProbe());
         bar.addView(probe);
+        Button copy = new Button(this);
+        copy.setText("COPY RESULT");
+        copy.setOnClickListener(v -> {
+            ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            cb.setPrimaryClip(ClipData.newPlainText("Kai Feedback OSC diagnostic",lastReport));
+            update("Diagnostic copied · paste result in ChatGPT");
+        });
+        bar.addView(copy);
         root.addView(bar);
         WebView web = new WebView(this);
         web.setBackgroundColor(Color.rgb(11,16,22));
@@ -60,7 +72,7 @@ public class MainActivity extends Activity {
         return Arrays.copyOf(raw,(raw.length+3)&~3);
     }
 
-    private void update(String text) { runOnUiThread(() -> status.setText(text)); }
+    private void update(String text) { lastReport = text; runOnUiThread(() -> status.setText(text)); }
 
     private void runProbe() {
         if (probing) return;
@@ -99,6 +111,9 @@ public class MainActivity extends Activity {
                 long end = android.os.SystemClock.elapsedRealtime()+2500;
                 int meterPackets=0;
                 int otherPackets=0;
+                StringBuilder packetDetails = new StringBuilder();
+                int meterBytes=0;
+                int maxPacketBytes=0;
                 sock.setSoTimeout(350);
                 while (android.os.SystemClock.elapsedRealtime()<end) {
                     try {
@@ -107,13 +122,22 @@ public class MainActivity extends Activity {
                         if (!packet.getAddress().equals(mixer)) continue;
                         String msg = new String(packet.getData(),0,Math.min(packet.getLength(),64),StandardCharsets.UTF_8);
                         String path = msg.split("\u0000",2)[0];
-                        if (path.startsWith("/meters/")) meterPackets++;
+                        maxPacketBytes = Math.max(maxPacketBytes,packet.getLength());
+                        if (path.startsWith("/meters/")) { meterPackets++; meterBytes += packet.getLength(); }
                         else otherPackets++;
+                        if (packetDetails.length()<450) {
+                            packetDetails.append(path.replaceAll("[^\\x20-\\x7E]","?"))
+                                .append("(").append(packet.getLength()).append("B) ");
+                        }
                     } catch (java.net.SocketTimeoutException ignored) { }
                 }
-                update("OSC OK · meter packets: "+meterPackets+" · other: "+otherPackets+" · RTA unverified");
+                update("OSC OK | mixer=192.168.0.100:10023 | meterPackets="+meterPackets+
+                    " | meterBytes="+meterBytes+" | otherPackets="+otherPackets+
+                    " | maxPacketBytes="+maxPacketBytes+" | paths="+packetDetails+
+                    " | RTA=UNVERIFIED | EQ_WRITE=DISABLED");
             } catch (Exception e) {
-                update("OSC test failed: "+e.getClass().getSimpleName()+" · check mixer/network");
+                update("OSC test failed: "+e.getClass().getSimpleName()+" · "+e.getMessage()+
+                    " | mixer=192.168.0.100:10023 | EQ_WRITE=DISABLED");
             } finally { probing = false; }
         }).start();
     }
