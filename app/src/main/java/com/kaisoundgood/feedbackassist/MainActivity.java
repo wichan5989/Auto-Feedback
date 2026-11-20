@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
         copy.setOnClickListener(v -> {
             ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             cb.setPrimaryClip(ClipData.newPlainText("Kai Feedback OSC diagnostic",lastReport));
-            update("Diagnostic copied · paste result in ChatGPT");
+            runOnUiThread(() -> status.setText("Diagnostic copied · paste result in ChatGPT"));
         });
         bar.addView(copy);
         root.addView(bar);
@@ -103,6 +103,17 @@ public class MainActivity extends Activity {
         return out.toString();
     }
 
+    private static int blobOffset(byte[] data,int length) {
+        int addressEnd=paddedEnd(data,0,length);
+        if(addressEnd<0 || addressEnd>=length) return -1;
+        int tagEnd=paddedEnd(data,addressEnd,length);
+        if(tagEnd<0 || tagEnd+4>length) return -1;
+        if(data[addressEnd]!=',' || data[addressEnd+1]!='b' || data[addressEnd+2]!=0) return -1;
+        int n=((data[tagEnd]&255)<<24)|((data[tagEnd+1]&255)<<16)|((data[tagEnd+2]&255)<<8)|(data[tagEnd+3]&255);
+        if(n<0 || n>length-tagEnd-4) return -1;
+        return tagEnd+4;
+    }
+
     private void update(String text) { lastReport = text; runOnUiThread(() -> status.setText(text)); }
 
     private void runProbe() {
@@ -146,6 +157,8 @@ public class MainActivity extends Activity {
                 int meterBytes=0;
                 int maxPacketBytes=0;
                 String shape15="none", shape16="none", rtaSource="none";
+                MeterAnalyzer analyze15 = new MeterAnalyzer();
+                MeterAnalyzer analyze16 = new MeterAnalyzer();
                 sock.setSoTimeout(350);
                 while (android.os.SystemClock.elapsedRealtime()<end) {
                     try {
@@ -157,8 +170,16 @@ public class MainActivity extends Activity {
                         maxPacketBytes = Math.max(maxPacketBytes,packet.getLength());
                         if (path.startsWith("/meters/")) {
                             meterPackets++; meterBytes += packet.getLength();
-                            if(path.equals("/meters/15") && shape15.equals("none")) shape15=packetShape(packet.getData(),packet.getLength());
-                            if(path.equals("/meters/16") && shape16.equals("none")) shape16=packetShape(packet.getData(),packet.getLength());
+                            if(path.equals("/meters/15")) {
+                                if(shape15.equals("none")) shape15=packetShape(packet.getData(),packet.getLength());
+                                int offset=blobOffset(packet.getData(),packet.getLength());
+                                if(offset>=0) analyze15.accept(java.util.Arrays.copyOfRange(packet.getData(),offset,packet.getLength()),packet.getLength()-offset);
+                            }
+                            if(path.equals("/meters/16")) {
+                                if(shape16.equals("none")) shape16=packetShape(packet.getData(),packet.getLength());
+                                int offset=blobOffset(packet.getData(),packet.getLength());
+                                if(offset>=0) analyze16.accept(java.util.Arrays.copyOfRange(packet.getData(),offset,packet.getLength()),packet.getLength()-offset);
+                            }
                         } else {
                             otherPackets++;
                             if(path.equals("/-prefs/rta/source")) rtaSource=packetShape(packet.getData(),packet.getLength());
@@ -172,7 +193,8 @@ public class MainActivity extends Activity {
                 update("OSC OK | mixer=192.168.0.100:10023 | meterPackets="+meterPackets+
                     " | meterBytes="+meterBytes+" | otherPackets="+otherPackets+
                     " | maxPacketBytes="+maxPacketBytes+" | shape15={"+shape15+"} | shape16={"+shape16+
-                    "} | source={"+rtaSource+"} | paths="+packetDetails+
+                    "} | source={"+rtaSource+"} | analysis15={"+analyze15.report()+
+                    "} | analysis16={"+analyze16.report()+"} | paths="+packetDetails+
                     " | RTA=UNVERIFIED | EQ_WRITE=DISABLED");
             } catch (Exception e) {
                 update("OSC test failed: "+e.getClass().getSimpleName()+" · "+e.getMessage()+
